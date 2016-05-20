@@ -1,0 +1,319 @@
+---
+title: "CIVITAS_DOMUS"
+author: "Antonio Ripoll"
+date: "24 de marzo de 2016"
+output: word_document
+---
+
+## R Markdown
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+## Preparacion de ficheros 
+Se calculan las alturas de cada cuerpo edificado a partir de los datos de fichero construc.shp para:
+        1. Incorporar a cada parcela la altura maxima existente
+        2. Calcular el techo edificado segun geometria
+        3. Comprobar la existencia de piscina
+        4. Localizar parcelas sin edificar
+        
+Se unifican las construcciones a partir de su referencia catastral para analizar con **civitas_0NEW**
+
+## Directorios de trabajo
+### Mira en que ordenador trabaja y elige directorios
+```{r directorios}
+donde=Sys.info()["nodename"] 
+#if(donde['nodename']=="ANTONIOHP") setwd("C:/Users/Antonio/Google Drive/civitas") else setwd("C:/DADES/DadesObertes/TORREDEMBARRA/2016")
+if(donde['nodename']=="ANTONIOHP") setwd("C:/DadesObertes/TARRAGONA/2016") else setwd("C:/DADES/DadesObertes/TORREDEMBARRA/2016")
+
+# alfanum="./43_155_U_2016-01-22.CAT/43_155_U_2016-01-22.CAT" 
+# grafmasa="./43_155_UA_2016-01-24_SHF/MASA"
+# grafpar="./43_155_UA_2016-01-24_SHF/PARCELA"
+# grafcons2="./43_155_UA_2016-01-24_SHF/CONSTRU" 
+# grafcons="C:/DADES/DadesObertes/CLUSTER" 
+```
+
+## Carga librerias
+```{r librerias}
+library(RPostgreSQL)
+library(maptools)
+library(rgdal)
+library(rgeos)
+library(dplyr)
+```
+
+## Proceso en servidor
+### Funcion de tranformacion de PostgreSQL a SpatialLines para plotear
+```{r SLDF}
+# Funcion para "polygons y lines"
+SLDF<-function(postgis,gcampo){
+        map_obj<-mapply(function(x) readWKT(x), x=postgis[,gcampo])
+        
+        if(class(map_obj[[1]])[1]=="SpatialPolygons") {
+                Spol <- SpatialPolygons(lapply(1:length(map_obj), function(i) {
+                    pol <- slot(map_obj[[i]], "polygons")[[1]]
+                    slot(pol, "ID") <- as.character(i)
+                    pol
+                }))
+        }
+        else    {                
+                Spol <- SpatialLines(lapply(1:length(map_obj), function(i) {
+                    pol <- slot(map_obj[[i]], "lines")[[1]]
+                    slot(pol, "ID") <- as.character(i)
+                    pol
+                }))
+        }
+        return(Spol)
+}
+```
+
+## Funciones para tratar la nomenclatura de las construcciones del fichero .SHP
+
+```{r arabe, echo=FALSE}
+# Funcion para pasar numeracion romana a arabe
+#   Podria tener mas conceptos
+valora<-function(x){
+  cade=c()
+  for (k in x){
+    cad=unlist(strsplit(as.character(k),"[+]"))
+    uni=c()
+    for(n in cad){    #Ordenados por longitud de cadena
+
+      n<-gsub(as.character("E. SOCIAL"),"1",n)
+      n<-gsub(as.character("E. COMERCIAL"),"1",n)
+      n<-gsub(as.character("E. DEPORTIVO"),"0",n)
+      n<-gsub("RUINA","0",n)
+        n<-gsub("TERRENY","0",n)
+        n<-gsub("CAMPING","0",n)
+        n<-gsub("PISCINA","0",n)
+      n<-gsub("VOL","0",n)
+        n<-gsub("SILO","1",n)
+        n<-gsub("YJD","0",n)
+      n<-gsub("PI","0",n)
+        n<-gsub("XXI","21",n)     
+        n<-gsub("XX","20",n)
+        n<-gsub("XIX","19",n)
+        n<-gsub("XVIII","18",n)
+        n<-gsub("XVII","17",n)
+        n<-gsub("XVI","16",n)
+        n<-gsub("XV","15",n)
+        n<-gsub("XIV","14",n)
+        n<-gsub("XIII","13",n)
+      n<-gsub("XII","12",n)
+      n<-gsub("XI","11",n)
+      n<-gsub("IX","9",n)
+      n<-gsub("X","10",n)
+      n<-gsub("IV","4",n)
+        n<-gsub("VIII","8",n)
+      n<-gsub("VII","7",n)
+      n<-gsub("VI","6",n)
+      n<-gsub("V","5",n)
+        n<-gsub("v","5",n) # minuscula
+      n<-gsub("III","3",n)
+      n<-gsub("II","2",n)
+      n<-gsub("I","1",n)
+      uni=paste0(uni,"+",n)
+    }
+    uni2<-sub("[+]","",uni)
+    uni2<-sub("[.]","0*",uni2)
+    cade<-append(cade,uni2)
+  }
+  return(cade)
+}
+
+# FUNCION PARA VALORAR RESTO DE TEXTO
+# Cambia caracteres por su equivalente aritmetico
+# para determinar la edificabilidad existente
+
+texto<-function(x){
+  cade=c()
+  for (k in x){
+    cad=unlist(strsplit(as.character(k),"[+]"))
+    uni=c()
+    for(n in cad){
+      n<-gsub("POR","*1",n)
+      n<-gsub("JD","0",n)
+      n<-gsub("TZA","*0",n)
+      n<-gsub("B","*0",n)
+      n<-gsub("CONS","*0",n)
+      n<-gsub("CO","*1",n)
+      n<-gsub("SS","*0",n)
+      n<-gsub("SUELO","*0",n)
+      n<-gsub("SOP","*1",n)
+      n<-gsub("TEN","*0",n)
+      n<-gsub("TRF","*1",n)
+      n<-gsub("ZPAV","*0",n)
+      n<-gsub("ZD","*0",n)
+      n<-gsub("Z","*0",n)
+      n<-gsub("ALT","*1",n)
+      n<-gsub("DEP","*1",n)
+      n<-gsub("ESC","*1",n)
+      n<-gsub("EPT","1",n)
+      n<-gsub("ETQ","0",n)
+      n<-gsub("RF","*0",n)
+      n<-gsub("EN","*0",n)
+      n<-gsub("PJE","*0",n)
+      n<-gsub("P","*0",n)
+      # n<-gsub("RU1NA","*0",n)
+      n<-gsub("A","*0*",n)
+      n<-gsub("S","*0",n)
+      n<-gsub("K","0",n)
+      n<-gsub("E","0",n)
+      n<-gsub("FU","0",n)      
+      n<-gsub("M","0",n)
+        n<-gsub("<NA>","0",n)
+      n<-gsub("R","0",n)
+      n<-gsub("TC","0",n)
+      n<-gsub("T","*1",n)      
+      n<-gsub("\\+ *","+",n)      
+      n<-gsub("\\+\\+","+",n)
+      n<-gsub("\\?","0",n)
+      n<-gsub("-","0*",n) # Evita contabilizar bajo rasantes
+      n<-gsub("`","",n)
+      uni=paste0(uni,"+",n)
+    }
+    uni<-gsub("\\+\\*","+0*",uni)
+    #     uni<-sub("[+,*]","",uni)
+    cade<-append(cade,uni)
+  }
+  return(cade)
+}
+```
+
+## Lectura del fichero de construcciones
+
+```{r}
+# LEE LA CONSTRUCCION
+# Tarragona
+constru<- readOGR(dsn="C:/DadesObertes/TARRAGONA/2016/43_900_UA_2016-01-24_SHF/CONSTRU",layer="CONSTRU", stringsAsFactors=FALSE)
+#Torredembarra
+constru<- readOGR(dsn="C:/DADES/DadesObertes/TORREDEMBARRA/2016/43_155_UA_2016-01-24_SHF/CONSTRU",layer="CONSTRU", stringsAsFactors=FALSE)
+# Tarragona
+# which(constru$alto=="+N*0*")
+# constru@data[17832,"CONSTRU"]
+table(is.na(constru@data$CONSTRU))
+# constru@data[17832,"CONSTRU"]=0
+```
+
+## Calcula el numero de plantas y graba el fichero CONSTRUalto.shp 
+
+```{r calcula}
+# OPCIONALMENTE - APLICACION DE LA FUNCION A TODO EL FICHERO
+f1<- function(x) eval(parse(text=x))
+constru$texto<-valora(constru$CONSTRU)
+constru$alto<-texto(constru$texto)
+plantas<-lapply(constru@data$alto,f1)
+constru$plantas<-as.integer(unlist(plantas))
+constru$NINTERNO<-as.integer(constru$NINTERNO)
+table(constru@data$plantas)
+
+# Quita las construcciones con mas de 30 plantas
+masde30<-constru@data$plantas>30
+constru@data$plantas[masde30]<-1
+
+# Graba las construcciones con al menos una planta en un nuevo fichero
+# Tarragona
+writeOGR(constru,"C:/DadesObertes/TARRAGONA/2016/43_900_UA_2016-01-24_SHF/CONSTRU", "CONSTRUalto", driver="ESRI Shapefile")
+
+# Torredembarra
+writeOGR(constru,"C:/DADES/DadesObertes/TORREDEMBARRA/2016/43_155_UA_2016-01-24_SHF/CONSTRU","CONSTRUalto", driver="ESRI Shapefile")
+```
+
+### Union de construcciones por referencia catastral
+Union de las construcciones de la misma parcela en un unico poligono
+Campos de datos: Alturas maxima, minima y media
+```{r union}
+# Tarragona
+constru2<- readOGR(dsn="C:/DadesObertes/TARRAGONA/2016/43_900_UA_2016-01-24_SHF/CONSTRU",layer="CONSTRUalto", stringsAsFactors=FALSE)
+# Torredembarra
+constru2<- readOGR(dsn="C:/DADES/DadesObertes/TORREDEMBARRA/2016/43_155_UA_2016-01-24_SHF/CONSTRU",layer="CONSTRUalto", stringsAsFactors=FALSE)
+
+#constru2@polygons[[1]]@ID
+unionconstruc<-subset(constru2,plantas>0)
+construc<-gUnaryUnion(unionconstruc, as.character(unionconstruc$REFCAT))
+
+datos <- constru2@data
+construcdf<-data.frame(summarize(group_by(unionconstruc@data,REFCAT), hmedia=mean(plantas), hmax=max(plantas), hmin=min(plantas)))
+
+colnames(construcdf)[1] <- "ID"
+row.names(construcdf) <- construcdf$ID
+construcdf$refcat<-construcdf$ID
+
+construparcel <- SpatialPolygonsDataFrame(construc,construcdf)
+
+# Tarragona
+writeOGR(construparcel,"C:/DadesObertes/TARRAGONA/2016/43_900_UA_2016-01-24_SHF/CONSTRU", "CONSTRUparcel", driver="ESRI Shapefile")
+
+# Torredembarra
+writeOGR(construparcel,"C:/DADES/DadesObertes/TORREDEMBARRA/2016/43_155_UA_2016-01-24_SHF/CONSTRU","CONSTRUparcel", driver="ESRI Shapefile")
+
+```
+
+## Errores
+Mirar directorios de lectura y grabacion
+```{r}
+constru@data$REFCAT[masde30]
+constru@data$CONSTRU[masde30]
+sum(constru@data$AREA[masde30])
+sum(constru@data$AREA)
+```
+
+## Subida a servidor de los nuevos shapes
+### No funciona con datos geometricos. Hay que importarlos desde PostgreSQL
+```{r}
+library(RPostgreSQL)
+con <- dbConnect(PostgreSQL(), host="comundata.com", user= "postgres", password="pasipasi", dbname="opendata")
+dbListTables(con)
+dbWriteTable(con, "TAconstrualto", constru)
+postgresqlWriteTable(con, "taconstruparcel", construparcel)
+test='SELECT taconstruparcel.* FROM public.taconstruparcel
+WHERE cast(taconstruparcel.hmax AS integer)>= 16;'
+dfTemp = dbGetQuery(con, test)
+dbListTables(con)
+dbDisconnect(con)
+```
+
+## Calculo de plantas a partir de fichero .CAT
+Se ejecuta primero la descomposicion del fichero .CAT con el programa TorredembarraVivT.Rmd
+Se cargan los ficheros resultantes a PotgreSQL
+Se puede leer datos del formato 14 en local
+```{r}
+fichero="43_155_U_2015-09-25.CAT"        # Torredembarra
+fichero="43_900_U_2016-01-22.CAT"       # Tarragona
+muni="43_155_"
+muni="43_900_"  # Tarragona
+library(reshape)
+library(dplyr)
+cat14<-read.csv(paste0(muni,"registros14.csv"), na.strings = 0,stringsAsFactors=FALSE)
+cat11<-read.csv(paste0(muni,"registros11.csv"), na.strings = 0,stringsAsFactors=FALSE)
+# cat14$pl[cat14$parcat=="1941618CF5514B"]
+cat14[is.na(eval(as.integer(cat14$pl))),"pl"]="00 "
+aplantas <- data.frame(summarize(group_by(cat14,parcat),alto=as.integer(max(pl))+1,
+                                 antiguedad=as.integer(mean(antiguedad)),
+                                 supcons=as.integer(sum(superficie))))
+funde<-merge(aplantas,cat11,by="parcat")
+funde<-funde[!(is.na(funde$cy)),]
+funde$cx=as.double(funde$cx/100)
+funde$cy=as.double(funde$cy/100)
+real <- funde[funde$alto<21,]
+write.csv(real,"parcel14.csv")
+
+
+
+```
+
+### Explotacion de los datos anteriores
+
+```{r explotacion}
+table(real$alto)
+total<-summarize(group_by(real,siglo=as.integer(antiguedad/100)),construido=sum(supcons))
+total
+totalplot<-summarize(group_by(real,decada=as.integer(antiguedad/10)),construido=sum(supcons))
+plot(totalplot$decada,totalplot$construido,xlim=c(180,200),"l")
+```
+
+Siguiente trabajo: Vincular datos a parcelas graficas y comparar con alturas obtenidas a partir de .shp
+Corregir el calculo anadiendo aticos, sobreaticos, entresuelos y altillos
+
+Tarragona a 23 de marzo de 2016

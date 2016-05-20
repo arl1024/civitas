@@ -1,0 +1,87 @@
+---
+title: "civitas_cluster"
+author: "Antonio Ripoll"
+date: "27 de marzo de 2016"
+output: html_document
+---
+
+Programa para crear clusters de ciudad en funcion de varios parametros
+
+## R Markdown
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+## Directorios de trabajo y librerias
+```{r}
+donde=Sys.info()["nodename"] 
+#if(donde['nodename']=="ANTONIOHP") setwd("C:/Users/Antonio/Google Drive/civitas") else setwd("C:/DADES/DadesObertes/TORREDEMBARRA/2016")
+if(donde['nodename']=="ANTONIOHP") setwd("C:/DadesObertes/TARRAGONA/2016") else setwd("C:/DADES/DadesObertes/TORREDEMBARRA/2016")
+library(maptools)
+library(rgdal)
+library(rgeos)
+library(dplyr)
+```
+
+## Carga de fichero a analizar
+```{r}
+base<-read.csv("parcel14.csv",stringsAsFactors = FALSE )
+str(base)
+names(base)
+```
+
+## Cluster espacial
+```{r}
+km <- kmeans(cbind(base$cy,base$cx), centers = 12)
+plot(base$cx, base$cy, col = km$cluster, pch = 20)
+
+# Otro tipo de cluster
+library(fpc)
+DBSCAN <- dbscan(cbind(base$antiguedad,base$alto), eps =500, MinPts = 3)
+DBSCAN <- dbscan(cbind(base$cy,base$cx), eps = 300, MinPts = 50)
+plot(base$cx, base$cy, col = DBSCAN$cluster, pch = 20)
+
+```
+
+## Cluster de antiguedad y altura
+```{r}
+library(SPODT)
+# Usa SpatialPointsDataFrame
+```
+
+## cluster segun https://www.youtube.com/watch?v=5eDqRysaico
+```{r}
+library(cluster)
+base=subset(base,antiguedad>1800 & supsobre<5000)
+plot(antiguedad ~ supsobre, base)
+plot(alto ~ supsobre, base)
+
+# Normalization
+z<-base[,c(3:5,38:44)]
+head(z)
+# Elimina NA
+z$supbajo[is.na(z$supbajo)]<-0
+z$supsobre[is.na(z$supsobre)]<-0
+z$supcubierta[is.na(z$supcubierta)]<-0
+
+m<-apply(z,2,mean)
+s<-apply(z,2,sd)
+z<-scale(z,m,s)
+distance<-dist(z)
+
+wss<-(nrow(z)-1)*sum(apply(z,2,var))
+for(i in 2:20) wss[i]<-sum(kmeans(z,centers=i)$withinss)
+plot(1:20,wss,type="b",xlab="number of clusters",ylab="within groups SS")
+
+# K-Means Clustering
+kc<-kmeans(z,9)
+kc
+kc$centers
+plot(supsobre~antiguedad,base, col=kc$cluster)
+plot(cy~cx,base, col=kc$cluster)
+```
+
+
+
