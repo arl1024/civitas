@@ -1,0 +1,113 @@
+---
+title: "CIVITAS_0"
+author: "urbanisme"
+date: "Tuesday, March 15, 2016"
+output: html_document
+---
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+Proceso de datos catastrales para generar ficheros de informacion urbanistica
+# A.- Separacion de construcciones a limites de parcela
+## Preparacion de ficheros
+Los ficheros a procesar estan en el directorio:
+C:\DADES\DadesObertes\TORREDEMBARRA\2016
+
+con informacion alfanumerica:
+.\43_155_U_2016-01-22.CAT\43_155_U_2016-01-22.CAT 
+
+con informacion grafica:
+.\43_155_UA_2016-01-24_SHF\*\*.shp (MASA,PARCELA,CONSTRU)
+
+## Directorios de trabajo
+### Mira en que ordenador trabaja y elige directorios
+```{r}
+donde=Sys.info()["nodename"] 
+if(donde['nodename']=="ANTONIOHP") setwd("C:/Users/Antonio/Google Drive/civitas") else setwd("C:/DADES/DadesObertes/TORREDEMBARRA/2016")
+
+alfanum="./43_155_U_2016-01-22.CAT/43_155_U_2016-01-22.CAT" 
+grafmasa="./43_155_UA_2016-01-24_SHF/MASA"
+grafpar="./43_155_UA_2016-01-24_SHF/PARCELA"
+grafcons2="./43_155_UA_2016-01-24_SHF/CONSTRU" 
+grafcons="C:/DADES/DadesObertes/CLUSTER" 
+```
+El fichero CONSTRU_alto es el CONSTRU con el campo altura anadido generado con un  .Rmd pasando los numeros en romano a arabe.
+
+## Carga librerias
+```{r}
+library(RPostgreSQL)
+library(maptools)
+library(rgdal)
+library(rgeos)
+library(spatstat)
+```
+
+## Proceso local
+### Lectura de elementos
+```{r}
+# En Torredembarra
+masa<-readOGR(grafmasa,"MASA", stringsAsFactors=FALSE)
+parcela<-readOGR(grafpar,"PARCELA", stringsAsFactors=FALSE)
+construc<-readOGR(grafcons,"CONSTRU_alto", stringsAsFactors=FALSE) 
+construc <- subset(construc,plantas>0)
+```
+
+### Distancia de construccion a limite de parcela
+```{r}
+#Union de construcciones por referencia catastral
+unicons <- gUnaryUnion(construc, as.character(construc$REFCAT)) 
+distedif=as.data.frame(parcela$REFCAT, stringsAsFactors = FALSE)
+names(distedif)<-"refcat"
+distedif$dista=0
+
+for (i in seq(nrow(parcela))) {
+        #edif <- subset(unicons,covers(parcela[i],unicons))
+        edif <- unicons[over(parcela[i,],unicons)]
+        distedif[,"dista"] <- gDistance(gBoundary(parcela[i,]),edif)
+}
+```
+
+## Proceso en servidor
+### Lectura de elementos
+```{r}
+con <- dbConnect(PostgreSQL(), host="comundata.com", user= "postgres", password="pasipasi", dbname="opendata")
+
+# Busca separacion minima a limie de parcela
+testdist='SELECT "PARCELA"."REFCAT",
+        "PARCELA".the_geom p,
+        construparcel3.geom c,
+        ST_AsText(ST_ExteriorRing("PARCELA".the_geom)) par, 
+        ST_AsText(construparcel3.geom) cons,
+        ST_Distance(ST_AsText(ST_ExteriorRing("PARCELA".the_geom)),
+        ST_AsText(construparcel3.geom)) dist,
+        ST_AREA(ST_AsText(construparcel3.geom)) areacons,
+        ST_Perimeter(ST_AsText(construparcel3.geom)) pericons,
+        ST_AsText(ST_ShortestLine(ST_ExteriorRing("PARCELA".the_geom), construparcel3.geom)) separa
+        FROM public.construparcel3, public."PARCELA"
+        WHERE ST_IsValid("PARCELA".the_geom) AND 
+        ST_IsValid(construparcel3.geom) AND 
+        ST_Contains("PARCELA".the_geom, construparcel3.geom);'
+
+distancia = dbGetQuery(con, testdist)
+distancia[1,"separa"]   # Linea de separacion minima
+
+str(distancia$gid)
+row.names(distancia) = distancia$gid
+
+for (i in seq(nrow(distancia))) {
+  if (i == 1) {
+    spTemp = readWKT(distancia$separa[i],distancia$REFCAT[i])
+  }
+  else {
+    spTemp = rbind(
+      spTemp, readWKT(distancia$separa[i],distancia$REFCAT[i])
+    )
+  }
+print(i)
+}
+# Busca separacion minima a fachada
+
+
+```
+
+
